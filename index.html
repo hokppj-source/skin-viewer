@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ค้นหาสกิน Minecraft</title>
+<style>
+:root{--bg:#f4f4f5;--panel:#fff;--text:#1c1c1e;--muted:#6b6b70;--accent:#5b8c3a;--border:#e2e2e5;}
+@media (prefers-color-scheme: dark){
+  :root{--bg:#1c1c1e;--panel:#2c2c2e;--text:#f2f2f2;--muted:#9a9a9e;--accent:#7cb34f;--border:#3a3a3c;}
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
+.wrap{max-width:480px;margin:0 auto;padding:20px 16px 40px;}
+h1{font-size:1.3rem;margin:0 0 4px;}
+p.sub{color:var(--muted);font-size:.9rem;margin:0 0 20px;}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:16px;}
+label{display:block;font-size:.85rem;color:var(--muted);margin-bottom:6px;}
+input[type=text]{width:100%;font-size:1rem;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);}
+.row{display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap;}
+select,button{font-size:.9rem;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);}
+button{cursor:pointer;background:var(--accent);color:#fff;border:none;font-weight:600;}
+button:disabled{opacity:.5;cursor:not-allowed;}
+button.secondary{background:var(--bg);color:var(--text);border:1px solid var(--border);}
+#viewer-box{width:100%;aspect-ratio:1/1;max-width:400px;margin:0 auto;border-radius:12px;overflow:hidden;background:linear-gradient(180deg,#87ceeb,#e0f6ff);touch-action:none;}
+canvas{display:block;width:100%!important;height:100%!important;}
+.hint{font-size:.8rem;color:var(--muted);text-align:center;margin-top:8px;}
+.empty,.status{display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:.85rem;text-align:center;padding:20px;}
+.error{color:#c0392b;font-size:.85rem;margin-top:8px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ค้นหาสกิน Minecraft</h1>
+  <p class="sub">พิมพ์ชื่อผู้เล่น (Java Edition) เพื่อดึงสกินที่ใส่อยู่ในเกม ดูแบบ 3 มิติ หมุน/ซูมได้ แล้วดาวน์โหลดออกมาได้</p>
+
+  <div class="panel">
+    <label for="username">ชื่อผู้เล่น (Java Edition)</label>
+    <input type="text" id="username" placeholder="เช่น Notch" autocomplete="off">
+    <div class="row">
+      <button id="searchBtn" type="button">ค้นหา</button>
+      <button id="rotateBtn" class="secondary" type="button">หมุนอัตโนมัติ: ปิด</button>
+    </div>
+    <p class="error" id="errorMsg"></p>
+  </div>
+
+  <div class="panel">
+    <div id="viewer-box"><div class="empty" id="emptyMsg">ค้นหาชื่อผู้เล่นด้านบนเพื่อเริ่มดู</div></div>
+    <p class="hint">ลาก = หมุน • สโครล/ปิดนิ้ว = ซูม</p>
+  </div>
+
+  <div class="panel">
+    <button id="downloadBtn" disabled style="width:100%;">ดาวน์โหลดไฟล์สกินนี้</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/skinview3d@3.1.0/bundles/skinview3d.bundle.js"></script>
+<script>
+let viewer = null;
+let currentBlobUrl = null;
+let currentUsername = null;
+let autoRotate = false;
+
+const usernameInput = document.getElementById('username');
+const searchBtn = document.getElementById('searchBtn');
+const rotateBtn = document.getElementById('rotateBtn');
+const downloadBtn = document.getElementById('downloadBtn');
+const errorMsg = document.getElementById('errorMsg');
+const viewerBox = document.getElementById('viewer-box');
+
+function initViewer(){
+  if(viewer) return viewer;
+  const canvas = document.createElement('canvas');
+  viewerBox.innerHTML = '';
+  viewerBox.appendChild(canvas);
+  viewer = new skinview3d.SkinViewer({
+    canvas: canvas,
+    width: viewerBox.clientWidth,
+    height: viewerBox.clientHeight
+  });
+  viewer.zoom = 0.9;
+  viewer.animation = new skinview3d.WalkingAnimation();
+  viewer.animation.speed = 0;
+  return viewer;
+}
+
+async function searchSkin(){
+  const name = usernameInput.value.trim();
+  errorMsg.textContent = '';
+  if(!name){ errorMsg.textContent = 'กรุณาพิมพ์ชื่อผู้เล่นก่อน'; return; }
+  searchBtn.disabled = true;
+  searchBtn.textContent = 'กำลังค้นหา...';
+  try{
+    // 1) หา UUID จากชื่อผู้เล่น (Mojang API)
+    const profileRes = await fetch('https://api.mojang.com/users/profiles/minecraft/' + encodeURIComponent(name));
+    if(profileRes.status === 204 || profileRes.status === 404){
+      throw new Error('ไม่พบผู้เล่นชื่อนี้');
+    }
+    if(!profileRes.ok) throw new Error('เรียก API ไม่สำเร็จ (' + profileRes.status + ')');
+    const profile = await profileRes.json();
+    const uuid = profile.id;
+
+    // 2) ใช้ UUID ดึงสกินจาก Crafatar (mirror ของ session server, รองรับ CORS)
+    const skinUrl = 'https://crafatar.com/skins/' + uuid;
+    const skinRes = await fetch(skinUrl);
+    if(!skinRes.ok) throw new Error('ผู้เล่นนี้อาจยังไม่เคยตั้งสกิน');
+    const blob = await skinRes.blob();
+    if(currentBlobUrl) URL.revokeObjectURL(currentBlobUrl);
+    currentBlobUrl = URL.createObjectURL(blob);
+    currentUsername = profile.name || name;
+
+    const v = initViewer();
+    v.loadSkin(currentBlobUrl, { model: 'auto-detect' });
+    downloadBtn.disabled = false;
+  }catch(err){
+    errorMsg.textContent = err.message || 'เกิดข้อผิดพลาด ลองใหม่อีกครั้ง';
+  }finally{
+    searchBtn.disabled = false;
+    searchBtn.textContent = 'ค้นหา';
+  }
+}
+
+searchBtn.addEventListener('click', searchSkin);
+usernameInput.addEventListener('keydown', (e)=>{ if(e.key === 'Enter') searchSkin(); });
+
+rotateBtn.addEventListener('click', ()=>{
+  autoRotate = !autoRotate;
+  if(viewer){
+    viewer.autoRotate = autoRotate;
+    viewer.autoRotateSpeed = 1.2;
+  }
+  rotateBtn.textContent = 'หมุนอัตโนมัติ: ' + (autoRotate ? 'เปิด' : 'ปิด');
+});
+
+downloadBtn.addEventListener('click', ()=>{
+  if(!currentBlobUrl) return;
+  const a = document.createElement('a');
+  a.href = currentBlobUrl;
+  a.download = (currentUsername || 'skin') + '.png';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+});
+
+window.addEventListener('resize', ()=>{
+  if(viewer){
+    viewer.width = viewerBox.clientWidth;
+    viewer.height = viewerBox.clientHeight;
+  }
+});
+</script>
+</body>
+</html>
